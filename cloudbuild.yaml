@@ -3,8 +3,13 @@ options:
 
 steps:    
   - name: 'gcr.io/cloud-builders/docker'    
-    args: ['build', '-t', 'us-central1-docker.pkg.dev/flightline-demo/flightline-repo/flightline-flowise:latest', '.']
-  
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/flightline-demo/flightline-repo/flightline-flowise:latest'
+      - '-f'
+      - 'docker/Dockerfile'
+      - '.'
   - name: 'gcr.io/cloud-builders/docker'    
     args: ['push', 'us-central1-docker.pkg.dev/flightline-demo/flightline-repo/flightline-flowise:latest']
 

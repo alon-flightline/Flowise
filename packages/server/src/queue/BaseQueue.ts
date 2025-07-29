@@ -53,7 +53,11 @@ export abstract class BaseQueue {
             removeOnComplete = keepJobObj
         }
 
-        return await this.queue.add(jobId, jobData, { removeOnFail, removeOnComplete })
+        return await this.queue.add(jobId, jobData, {
+            removeOnFail, removeOnComplete,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 }
+        })
     }
 
     public createWorker(concurrency: number = WORKER_CONCURRENCY): Worker {
