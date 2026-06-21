@@ -1,9 +1,9 @@
 import { Tool } from '@langchain/core/tools'
-import { ICommonObject, IDatabaseEntity, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../../src/Interface'
-import { MCPToolkit, validateMCPServerConfig } from '../core'
-import { getVars, prepareSandboxVars, parseJsonBody } from '../../../../src/utils'
-import { DataSource } from 'typeorm'
 import hash from 'object-hash'
+import { DataSource } from 'typeorm'
+import { ICommonObject, IDatabaseEntity, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../../src/Interface'
+import { getVars, parseJsonBody, prepareSandboxVars } from '../../../../src/utils'
+import { MCPToolkit, validateMCPServerConfig } from '../core'
 
 const mcpServerConfig = `{
     "command": "npx",
@@ -136,16 +136,16 @@ class Custom_MCP implements INode {
         }
 
         let sandbox: ICommonObject = {}
+        const workspaceId = options?.searchOptions?.workspaceId?._value || options?.workspaceId
 
         if (mcpServerConfig.includes('$vars')) {
             const appDataSource = options.appDataSource as DataSource
             const databaseEntities = options.databaseEntities as IDatabaseEntity
-
-            const variables = await getVars(appDataSource, databaseEntities, nodeData, options)
+            // If options.workspaceId is not set, create a new options object with the workspaceId for getVars.
+            const optionsWithWorkspaceId = options.workspaceId ? options : { ...options, workspaceId }
+            const variables = await getVars(appDataSource, databaseEntities, nodeData, optionsWithWorkspaceId)
             sandbox['$vars'] = prepareSandboxVars(variables)
         }
-
-        const workspaceId = options?.searchOptions?.workspaceId?._value || options?.workspaceId
 
         let canonicalConfig
         try {
@@ -183,13 +183,8 @@ class Custom_MCP implements INode {
 
             // Compatible with stdio and SSE
             let toolkit: MCPToolkit
-            if (process.env.CUSTOM_MCP_PROTOCOL === 'sse') {
-                toolkit = new MCPToolkit(serverParams, 'sse')
-            } else if (serverParams?.command === undefined) {
-                toolkit = new MCPToolkit(serverParams, 'sse')
-            } else {
-                toolkit = new MCPToolkit(serverParams, 'stdio')
-            }
+            if (process.env.CUSTOM_MCP_PROTOCOL === 'stdio' && serverParams!.command) toolkit = new MCPToolkit(serverParams, 'stdio')
+            else toolkit = new MCPToolkit(serverParams, 'sse')
 
             await toolkit.initialize()
 

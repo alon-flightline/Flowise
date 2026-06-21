@@ -56,6 +56,7 @@ import ChatFeedbackContentDialog from '@/ui-component/dialog/ChatFeedbackContent
 import StarterPromptsCard from '@/ui-component/cards/StarterPromptsCard'
 import AgentReasoningCard from './AgentReasoningCard'
 import AgentExecutedDataCard from './AgentExecutedDataCard'
+import ThinkingCard from './ThinkingCard'
 import { ImageButton, ImageSrc, ImageBackdrop, ImageMarked } from '@/ui-component/button/ImageButton'
 import CopyToClipboardButton from '@/ui-component/button/CopyToClipboardButton'
 import ThumbsUpButton from '@/ui-component/button/ThumbsUpButton'
@@ -95,6 +96,26 @@ const messageImageStyle = {
     width: '128px',
     height: '128px',
     objectFit: 'cover'
+}
+
+// Extension must match recording MIME so server validation and STT work (audio/webm, audio/mp4, audio/ogg).
+const getRecordingExtensionForMime = (mime) => {
+    const mimeToExt = {
+        'audio/webm': 'webm',
+        'audio/mp4': 'm4a',
+        'audio/x-m4a': 'm4a',
+        'audio/ogg': 'ogg',
+        'audio/oga': 'ogg',
+        'audio/wav': 'wav',
+        'audio/wave': 'wav',
+        'audio/x-wav': 'wav'
+    }
+    const extension = mimeToExt[mime]
+    if (extension) {
+        return extension
+    }
+    console.warn(`Unsupported audio MIME type: ${mime}. Defaulting to 'webm'.`)
+    return 'webm'
 }
 
 const CardWithDeleteOverlay = ({ item, disabled, customization, onDelete }) => {
@@ -225,6 +246,9 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
     // follow-up prompts
     const [followUpPromptsStatus, setFollowUpPromptsStatus] = useState(false)
     const [followUpPrompts, setFollowUpPrompts] = useState([])
+
+    // thinking/reasoning state
+    const [isThinking, setIsThinking] = useState(false)
 
     // drag & drop and file input
     const imgUploadRef = useRef(null)
@@ -455,6 +479,7 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
         } else {
             mimeType = blob.type ? blob.type.substring(0, pos) : ''
         }
+        const ext = getRecordingExtensionForMime(mimeType)
         // read blob and add to previews
         const reader = new FileReader()
         reader.readAsDataURL(blob)
@@ -464,7 +489,7 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                 data: base64data,
                 preview: audioUploadSVG,
                 type: 'audio',
-                name: `audio_${Date.now()}.wav`,
+                name: `audio_${Date.now()}.${ext}`,
                 mime: mimeType
             }
             setPreviews((prevPreviews) => [...prevPreviews, upload])
@@ -618,6 +643,45 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
         })
     }
 
+    const handleThinkingEvent = (data, duration) => {
+        if (data && duration === undefined) {
+            // Still thinking - append content
+            setIsThinking(true)
+            setMessages((prevMessages) => {
+                let allMessages = [...cloneDeep(prevMessages)]
+                if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+                const lastMessage = allMessages[allMessages.length - 1]
+                lastMessage.thinking = (lastMessage.thinking || '') + data
+                lastMessage.isThinking = true
+                return allMessages
+            })
+        } else if (data === '' && duration !== undefined) {
+            // Thinking finished - set duration
+            setIsThinking(false)
+            setMessages((prevMessages) => {
+                let allMessages = [...cloneDeep(prevMessages)]
+                if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+                const lastMessage = allMessages[allMessages.length - 1]
+                lastMessage.thinkingDuration = duration
+                lastMessage.isThinking = false
+                return allMessages
+            })
+        }
+    }
+
+    const finalizeThinking = () => {
+        // Clean up thinking state if stream ends unexpectedly
+        if (isThinking) {
+            setIsThinking(false)
+            setMessages((prevMessages) => {
+                let allMessages = [...cloneDeep(prevMessages)]
+                if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+                allMessages[allMessages.length - 1].isThinking = false
+                return allMessages
+            })
+        }
+    }
+
     const updateAgentFlowEvent = (event) => {
         if (event === 'INPROGRESS') {
             setMessages((prevMessages) => [...prevMessages, { message: '', type: 'apiMessage', agentFlowEventStatus: event }])
@@ -687,7 +751,53 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
         setMessages((prevMessages) => {
             let allMessages = [...cloneDeep(prevMessages)]
             if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+
+            // When usedTools are received, check if there are matching calledTools to replace
+            const lastMessage = allMessages[allMessages.length - 1]
+            if (lastMessage.calledTools && lastMessage.calledTools.length > 0) {
+                // Replace calledTools with usedTools for matching tool names
+                const updatedCalledTools = lastMessage.calledTools.map((calledTool) => {
+                    const matchingUsedTool = usedTools.find((usedTool) => usedTool.tool === calledTool.tool)
+                    return matchingUsedTool || calledTool
+                })
+
+                // Remove calledTools that have been replaced by usedTools
+                const remainingCalledTools = updatedCalledTools.filter(
+                    (calledTool) => !usedTools.some((usedTool) => usedTool.tool === calledTool.tool)
+                )
+
+                allMessages[allMessages.length - 1].calledTools = remainingCalledTools.length > 0 ? remainingCalledTools : undefined
+            }
+
             allMessages[allMessages.length - 1].usedTools = usedTools
+            return allMessages
+        })
+    }
+
+    const updateLastMessageCalledTools = (calledTools) => {
+        setMessages((prevMessages) => {
+            let allMessages = [...cloneDeep(prevMessages)]
+            if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+            allMessages[allMessages.length - 1].calledTools = calledTools
+            return allMessages
+        })
+    }
+
+    const cleanupCalledTools = () => {
+        setMessages((prevMessages) => {
+            let allMessages = [...cloneDeep(prevMessages)]
+            if (allMessages[allMessages.length - 1].type === 'userMessage') return allMessages
+
+            // Remove any remaining calledTools when the stream ends
+            const lastMessage = allMessages[allMessages.length - 1]
+            if (lastMessage && lastMessage.calledTools && lastMessage.calledTools.length > 0) {
+                // Only remove if there are still calledTools and no matching usedTools
+                const hasUsedTools = lastMessage.usedTools && lastMessage.usedTools.length > 0
+                if (!hasUsedTools) {
+                    allMessages[allMessages.length - 1].calledTools = undefined
+                }
+            }
+
             return allMessages
         })
     }
@@ -710,6 +820,7 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
             if (lastAgentReasoning && lastAgentReasoning.length > 0) {
                 allMessages[allMessages.length - 1].agentReasoning = lastAgentReasoning.filter((reasoning) => !reasoning.nextAgent)
             }
+            allMessages[allMessages.length - 1].calledTools = undefined
             return allMessages
         })
         setTimeout(() => {
@@ -1038,11 +1149,17 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                     case 'usedTools':
                         updateLastMessageUsedTools(payload.data)
                         break
+                    case 'calledTools':
+                        updateLastMessageCalledTools(payload.data)
+                        break
                     case 'fileAnnotations':
                         updateLastMessageFileAnnotations(payload.data)
                         break
                     case 'agentReasoning':
                         updateLastMessageAgentReasoning(payload.data)
+                        break
+                    case 'thinking':
+                        handleThinkingEvent(payload.data, payload.duration)
                         break
                     case 'agentFlowEvent':
                         updateAgentFlowEvent(payload.data)
@@ -1085,12 +1202,15 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                         handleTTSAbort(payload.data)
                         break
                     case 'end':
+                        cleanupCalledTools()
+                        finalizeThinking()
                         setLocalStorageChatflow(chatflowid, chatId)
                         closeResponse()
                         break
                 }
             },
             async onclose() {
+                cleanupCalledTools()
                 closeResponse()
             },
             async onerror(err) {
@@ -1102,6 +1222,7 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
     }
 
     const closeResponse = () => {
+        cleanupCalledTools()
         setLoading(false)
         setUserInput('')
         setUploadedFiles([])
@@ -1202,8 +1323,13 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                 }
                 if (message.sourceDocuments) obj.sourceDocuments = message.sourceDocuments
                 if (message.usedTools) obj.usedTools = message.usedTools
+                if (message.calledTools) obj.calledTools = message.calledTools
                 if (message.fileAnnotations) obj.fileAnnotations = message.fileAnnotations
                 if (message.agentReasoning) obj.agentReasoning = message.agentReasoning
+                if (message.reasonContent && typeof message.reasonContent === 'object') {
+                    obj.thinking = message.reasonContent.thinking
+                    obj.thinkingDuration = message.reasonContent.thinkingDuration
+                }
                 if (message.action) obj.action = message.action
                 if (message.artifacts) {
                     obj.artifacts = message.artifacts
@@ -2391,6 +2517,14 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                                                 })}
                                             </div>
                                         )}
+                                        {message.thinking && (
+                                            <ThinkingCard
+                                                thinking={message.thinking}
+                                                thinkingDuration={message.thinkingDuration}
+                                                isThinking={message.isThinking}
+                                                customization={customization}
+                                            />
+                                        )}
                                         {message.agentReasoning && message.agentReasoning.length > 0 && (
                                             <div style={{ display: 'block', flexDirection: 'row', width: '100%' }}>
                                                 {message.agentReasoning.map((agent, index) => (
@@ -2423,6 +2557,42 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                                                     sessionId={chatId}
                                                 />
                                             )}
+                                        {message.calledTools && (
+                                            <div
+                                                style={{
+                                                    display: 'block',
+                                                    flexDirection: 'row',
+                                                    width: '100%'
+                                                }}
+                                            >
+                                                {message.calledTools.map((tool, index) => {
+                                                    return tool ? (
+                                                        <Chip
+                                                            size='small'
+                                                            key={`called-${index}`}
+                                                            label={tool.tool}
+                                                            component='a'
+                                                            sx={{
+                                                                mr: 1,
+                                                                mt: 1,
+                                                                borderColor: 'primary.main',
+                                                                color: 'primary.main',
+                                                                backgroundColor: 'rgba(25, 118, 210, 0.1)',
+                                                                opacity: 0.9,
+                                                                '&:hover': {
+                                                                    backgroundColor: 'rgba(25, 118, 210, 0.2)',
+                                                                    opacity: 1
+                                                                }
+                                                            }}
+                                                            variant='outlined'
+                                                            clickable
+                                                            icon={<CircularProgress size={15} color='primary' />}
+                                                            onClick={() => onSourceDialogClick(tool, 'Called Tools')}
+                                                        />
+                                                    ) : null
+                                                })}
+                                            </div>
+                                        )}
                                         {message.usedTools && (
                                             <div
                                                 style={{
@@ -2435,7 +2605,7 @@ const ChatMessage = ({ open, chatflowid, isAgentCanvas, isDialog, previews, setP
                                                     return tool ? (
                                                         <Chip
                                                             size='small'
-                                                            key={index}
+                                                            key={`used-${index}`}
                                                             label={tool.tool}
                                                             component='a'
                                                             sx={{

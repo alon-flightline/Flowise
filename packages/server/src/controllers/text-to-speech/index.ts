@@ -1,11 +1,11 @@
-import { Request, Response, NextFunction } from 'express'
+import { NextFunction, Request, Response } from 'express'
+import { convertTextToSpeechStream } from 'flowise-components'
+import { StatusCodes } from 'http-status-codes'
+import { InternalFlowiseError } from '../../errors/internalFlowiseError'
 import chatflowsService from '../../services/chatflows'
 import textToSpeechService from '../../services/text-to-speech'
-import { InternalFlowiseError } from '../../errors/internalFlowiseError'
-import { StatusCodes } from 'http-status-codes'
-import { getRunningExpressApp } from '../../utils/getRunningExpressApp'
-import { convertTextToSpeechStream } from 'flowise-components'
 import { databaseEntities } from '../../utils'
+import { getRunningExpressApp } from '../../utils/getRunningExpressApp'
 
 const generateTextToSpeech = async (req: Request, res: Response) => {
     try {
@@ -30,8 +30,24 @@ const generateTextToSpeech = async (req: Request, res: Response) => {
         let provider: string, credentialId: string, voice: string, model: string
 
         if (chatflowId) {
+            let workspaceId = req.user?.activeWorkspaceId
+            let chatflow: Awaited<ReturnType<typeof chatflowsService.getChatflowById>>
+
+            if (workspaceId) {
+                chatflow = await chatflowsService.getChatflowById(chatflowId, workspaceId)
+            } else {
+                // Fallback: get workspaceId from chatflow when req.user.activeWorkspaceId is not set (from whitelist API)
+                chatflow = await chatflowsService.getChatflowById(chatflowId)
+                workspaceId = chatflow.workspaceId
+            }
+
+            if (!workspaceId) {
+                throw new InternalFlowiseError(
+                    StatusCodes.NOT_FOUND,
+                    `Error: textToSpeechController.generateTextToSpeech - workspace not found!`
+                )
+            }
             // Get TTS config from chatflow
-            const chatflow = await chatflowsService.getChatflowById(chatflowId)
             const ttsConfig = JSON.parse(chatflow.textToSpeech)
 
             // Find the provider with status: true
@@ -73,8 +89,6 @@ const generateTextToSpeech = async (req: Request, res: Response) => {
         res.setHeader('Content-Type', 'text/event-stream')
         res.setHeader('Cache-Control', 'no-cache')
         res.setHeader('Connection', 'keep-alive')
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Headers', 'Cache-Control')
 
         const appServer = getRunningExpressApp()
         const options = {

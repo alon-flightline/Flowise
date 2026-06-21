@@ -62,5 +62,14 @@ export class ChatFlow implements IChatFlow {
     updatedDate: Date
 
     @Column({ nullable: true, type: 'text' })
-    workspaceId?: string
+    mcpServerConfig?: string
+
+    @Column({ nullable: true, type: 'text', select: false })
+    webhookSecret?: string | null
+
+    @Column({ nullable: true, default: false })
+    webhookSecretConfigured?: boolean
+
+    @Column({ nullable: false, type: 'text' })
+    workspaceId: string
 }
